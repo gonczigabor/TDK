@@ -1,0 +1,159 @@
+---
+title: "Untitled"
+author: "Gönczi Gábor Miklós"
+date: '2022 02 03 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+**Index**
+
+```{r}
+setwd("C:/Users/Lenovo/OneDrive/Dokumentumok/Szakdoga/R/data")
+library(rvest)
+library(dplyr)
+
+index <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- c("cim", "url","datum")
+colnames(index) <- x
+datum <- as.Date("10-04-01", format="%y-%m-%d")
+ma <- as.Date("21-11-30", format="%y-%m-%d")
+
+while(datum <= ma){
+  link <- paste("https://index.hu/24ora?s=&tol=" , datum , "&ig=" , datum , 
+                      "&profil=&rovat=gazdasag&cimke=&word=1&pepe=1",sep="")
+  page <- read_html(link) 
+  cim <- page %>% html_nodes(".cim a") %>% html_text()
+  url <- page %>% html_nodes(".cim a") %>% html_attr("href")
+  Sys.sleep(2.2) 
+  ifelse(length(cim)==0,
+    index <- index,
+    index <- rbind(index,data.frame(cim,url,datum))
+    )
+  print(datum)
+  datum <- datum+1
+  Sys.sleep(2.2)
+}
+
+index$media <- "index"
+save(index,file = "index.Rdata")
+```
+
+
+**HVG**
+
+```{r}
+hvg <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- c("cim", "url","datum")
+colnames(hvg) <- x
+datum <- as.Date("10-04-01", format="%y-%m-%d")
+ma <- as.Date("21-11-30", format="%y-%m-%d")
+
+format(datum,format="%y")
+while(datum <= ma){
+  year <- substr(datum,1,4)
+  month <- substr(datum,6,7)
+  day <- substr(datum,9,10)
+  date <- as.character(paste(year,".",month,".",day,sep=""))
+  link <- paste("https://hvg.hu/frisshirek/" , date ,sep="")
+  page <- read_html(link) 
+  cim <- page %>% html_nodes("h1 a") %>% html_text()
+  url <- page %>% html_nodes("h1 a") %>% html_attr("href")
+  ifelse(length(cim)==0,
+         hvg <- hvg,
+         hvg <- rbind(hvg,data.frame(cim,url,datum))
+    )
+  print(datum)
+  datum <- datum+1
+}
+
+hvg$media <- "hvg"
+save(hvg,file = "hvg.Rdata")
+```
+
+
+**Origo**
+
+```{r}
+origo <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- c("cim", "url","datum")
+colnames(origo) <- x
+datum <- as.Date("10-04-01", format="%y-%m-%d")
+ma <- as.Date("21-11-30", format="%y-%m-%d")
+
+while(datum <= ma){
+  ev <- substr(datum,1,4)
+  honap <- substr(datum,6,7)
+  nap <- substr(datum,9,10)
+  link <- paste("https://www.origo.hu/hir-archivum/", ev ,"/",ev,honap,nap,".html#Gazdas?g",sep="")
+  page <- read_html(link) 
+  cim <- page %>% html_nodes(".archive-cikk a") %>% html_text()
+  url <- page %>% html_nodes(".archive-cikk a") %>% html_attr("href")
+  ifelse(length(cim)==0,
+    origo <- origo,
+    origo <- rbind(origo,data.frame(cim,url,datum))
+    )
+  print(datum)
+  datum <- datum+1
+}
+
+origo$media <- "origo"
+save(origo,file="origo.Rdata")
+```
+
+
+**Portfolio**
+
+```{r}
+portfolio <- data.frame(matrix(ncol = 3, nrow = 0))
+x <- c("cim", "url","datum")
+colnames(portfolio) <- x
+datum <- as.Date("10-04-01", format="%y-%m-%d")
+ma <- as.Date("21-11-30", format="%y-%m-%d")
+
+while(datum <= ma){
+  oldal<-1
+  link <- paste("https://www.portfolio.hu/kereses?q=&a=&df=" , datum , "&dt=" , datum , "&c=&page=",oldal,sep="")
+  page <- read_html(link) 
+  szam <- length(page %>% html_nodes(".page-link") %>% html_text())
+  cim <- page %>% html_nodes(".mt-sm-0 a") %>% html_text()
+  url <- page %>% html_nodes(".mt-sm-0 a") %>% html_attr("href")
+  while (oldal<szam-2){
+    link <- paste("https://www.portfolio.hu/kereses?q=&a=&df=" , datum , "&dt=" , datum , "&c=&page=",oldal,sep="")
+    page <- read_html(link) 
+    url <- page %>% html_nodes(".mt-sm-0 a") %>% html_attr("href")
+    cim <- page %>% html_nodes(".mt-sm-0 a") %>% html_text()
+    oldal <- oldal+1
+    portfolio <- rbind(portfolio,data.frame(cim,url,datum))
+  }
+  print(datum)
+  datum <- datum+1
+}
+
+portfolio$media <- "portfolio"
+save(portfolio,file = "portfolio.Rdata")
+```
+
+
+**Összesítés, fordítás**
+
+```{r}
+media <- rbind(index,hvg,origo,portfolio)
+
+library(translate)
+
+media$angol_cim <- NA
+
+for (i in 1:nrow(media)){
+  media$angol_cim[i] <- translate(media$cim[i], "hu" , "en" , key = "AIzaSyDvJ9UYGZalrc8FN4TgOaJboA9REQrKuL8")
+  i<- i+1
+}
+
+save(media,file="media_angol.Rdata")
+
+```
+
