@@ -1,0 +1,119 @@
+---
+title: "Mintavétel"
+author: "Gönczi Gábor Miklós"
+date: '2022 04 11 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning = FALSE,message = FALSE,include=TRUE)
+```
+
+**Szükséges csomagok betöltése*
+
+```{r}
+#Szózsák-modell
+library(tm)
+#Adatok transzformációja és vizualizációja
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(corpus)
+library(gganimate)
+#Hangulatelemzés
+library(tidytext)
+library(textdata)
+library(lubridate)
+```
+
+
+**Szótárak egyesítése**
+
+Annak érdekében, hogy a lehető legtöbb egyezést találjuk a szentimentszótárak alapján, egyesítem az egyes lexikonokat
+
+```{r}
+AFINN <- get_sentiments("afinn")# AFINN szótár importálása
+bing <- get_sentiments("bing")# Bingszótár importálása
+loughran <- get_sentiments("loughran")
+
+loughran$sentiment[loughran$sentiment=="positive"] <- 1
+loughran$sentiment[loughran$sentiment=="negative"] <- -1
+colnames(loughran) <- colnames(AFINN)
+
+AFINN$value <- sign(AFINN$value) #AFINN szótár átalakítása Bing alapelvűvé
+
+colnames(bing) <- colnames(AFINN)
+bing$value[bing$value=="positive"] <- 1
+bing$value[bing$value=="negative"] <- -1
+
+szotar <- rbind(loughran,AFINN,bing)
+szotar$value <- as.numeric(szotar$value)
+szotar$value[szotar$value==0]<- NA
+szotar <- na.omit(szotar)
+szotar <- unique(szotar)
+
+rm(AFINN,bing,loughran)
+
+```
+
+**Adatbázis betöltése, véletlen mintavétel, szentimentindexek meghatározása**
+
+Mivel a médiapiaci viszonyokra gyakran jellemző a politikai elfogultság, véletlen mintavételt végeztem, hogy ezáltal mindegyik hírportáltól egyenlő számú cikk képezze az elemzés alapját. A mintavételi hiba minimalizálásának érdekében a mintavételt 1000-szer ismételtem meg, majd vettem a mintaátlagok átlagát
+
+```{r}
+load_github_data("https://github.com/gonczigabor/TDK/blob/main/media_angol.Rdata")
+media$datum <- as.Date(paste(substr(media$datum,1,7),"-01",sep=""))
+data <- data.frame(matrix(ncol=2,nrow=560))
+colnames(data) <- c("datum","media")
+data$datum <- rep(unique(media$datum),4)
+data <- data[order(as.Date(data$datum)),]
+data$media <- rep(c("hvg","index","origo","portfolio"),140) #az R abc szerint fogja rendezni a media oszlopot összesítéskor
+rownames(data) <- 1:560
+
+index <- media[media$media=="index",]
+hvg <- media[media$media=="hvg",]
+origo <- media[media$media=="origo",]
+portfolio <- media[media$media=="portfolio",]
+
+for (i in 1:1000){
+  minta <- as.data.frame(matrix(ncol = 5, nrow = 0))
+  set.seed(i)
+  
+  for (k in 1:140){
+    date <- unique(media$datum)[k]
+    index_minta <- sample_n(index[index$datum==date,],100)
+    origo_minta <- sample_n(origo[origo$datum==date,],100)
+    hvg_minta <- sample_n(hvg[hvg$datum==date,],100)
+    portfolio_minta <- sample_n(portfolio[portfolio$datum==date,],100)
+    minta <- rbind(minta,index_minta,origo_minta,hvg_minta,portfolio_minta)
+  }
+  rm(index_minta,origo_minta,hvg_minta,portfolio_minta,date,k)
+  minta <- na.omit(minta)
+  
+  szavak <- unnest_tokens(minta,word,angol_cim) #szavakra bontás
+  szavak$word <- removeWords(szavak$word,stopwords("english")) #kötőszavak eltávolítása
+  szavak$word <- removeNumbers(szavak$word) #számok eltávolítása
+  szavak$word <- removePunctuation(szavak$word) #írásjelek eltávolítása
+  szavak$word <- stripWhitespace(szavak$word) #szóközök eltávolítása
+  szavak$word[szavak$word==""] <- NA #üres sorokba NA álljon
+  szavak <- na.omit(szavak) #NA-t tartalmazó sorok törlése
+  szavak <- left_join(szavak,szotar,by=c("word"="word")) #szentimentpontok hozzáadása szavanként
+
+  #Érzelmi töltetek hozzárendelése a cikkekhez
+  szavak$value[is.na(szavak$value)] <- 0
+  szavak %>% group_by(id) %>% summarise(erzelem=mean(value, na.rm=TRUE)) -> erzelem
+  minta <- left_join(minta,erzelem,by=c("id"="id"))
+  minta$datum <- as.factor(substr(minta$datum,1,7))
+  rm(erzelem)
+  
+  minta %>% dplyr::select(datum,media,erzelem) %>% group_by(datum,media) %>% summarise(atlag=mean(erzelem,na.rm = TRUE)) -> media_havi
+  
+  data[,ncol(data)+1] <- media_havi$atlag
+  
+  rm(minta,szavak,media_havi)
+  print(i)
+}
+
+rm(hvg,index,origo,portfolio)
+
+```
