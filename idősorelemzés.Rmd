@@ -1,0 +1,404 @@
+---
+title: "Idősorelemzés"
+author: "Gönczi Gábor Miklós"
+date: '2022 04 11 '
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Szükséges csomagok betöltése*
+
+```{r}
+#Adatok transzformációja és vizualizációja
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(corpus)
+library(gganimate)
+library(readxl)
+library(Rfssa)
+#Hangulatelemzés
+library(tidytext)
+library(textdata)
+#Elemzés
+library(Hmisc)
+library(zoo)
+library(wordcloud2)
+#Idősorelemzés
+library(lmtest)
+library(aod)
+library(vars)
+library(lmtest)
+library(urca)
+library(aTSA)
+library(frequencyConnectedness)
+library(forecast)
+```
+
+**Szentimentelemzés**
+
+```{r,warning=FALSE}
+#Adatok importálása
+load_github_data("https://github.com/gonczigabor/TDK/blob/main/data.Rdata")
+media_havi <- data.frame(datum=data$datum,media=data$media,atlag=rowMeans(data[,3:1002]))
+media_havi$datum <- as.Date(paste(media_havi$datum,"-01",sep=""))
+rm(data)
+
+media_szentiment <- as.data.frame(unique(media_havi$datum))
+colnames(media_szentiment) <- "datum"
+media_szentiment$index <- media_havi$atlag[media_havi$media=="index"]
+media_szentiment$hvg <- media_havi$atlag[media_havi$media=="hvg"]
+media_szentiment$origo <- media_havi$atlag[media_havi$media=="origo"]
+media_szentiment$portfolio <- media_havi$atlag[media_havi$media=="portfolio"]
+media_szentiment$atlag <- media_havi %>% group_by(datum) %>% summarise(atlag=mean(atlag)) %>% dplyr::pull(atlag)
+
+#6 hónapos mozgóátlagok kiszámítása
+media_szentiment$index_ma_6 <- rollmean(media_szentiment$index,k=6,fill=NA)
+media_szentiment$hvg_ma_6 <- rollmean(media_szentiment$hvg,k=6,fill=NA)
+media_szentiment$origo_ma_6 <- rollmean(media_szentiment$origo,k=6,fill=NA)
+media_szentiment$portfolio_ma_6 <- rollmean(media_szentiment$portfolio,k=6,fill=NA)
+media_szentiment$atlag_ma_6 <- rollmean(media_szentiment$atlag,k=6,fill=NA)
+
+ggplot(media_szentiment,aes(x=datum))+
+  labs(
+    x = "Dátum",
+    y = "Szentimentindex",
+    title = "2. ábra - Hírportálok átlagos havi szentimentindexe (6 hónapos mozgóátlag)",
+    subtitle = "2010 június - 2021 augusztus",
+    caption = "Forrás: Saját webes adatgyűjtés",
+    colour = "Hírportál"
+  )+
+  scale_x_date(date_breaks = "years" , date_labels = "%Y")+
+  geom_line(aes(y=index_ma_6,color="index"),size=0.5)+
+  geom_line(aes(y=origo_ma_6,color="origo"),size=0.5)+
+  geom_line(aes(y=hvg_ma_6,color="hvg"),size=0.5)+
+  geom_line(aes(y=portfolio_ma_6,color="portfolio"),size=0.5)+
+  geom_line(aes(y=atlag_ma_6,color="átlag"),size=1)+
+  theme_bw()
+
+
+```
+
+**Idősorelemzés**
+
+```{r,warning=FALSE}
+#Adatok importálása
+load_github_data("https://github.com/gonczigabor/TDK/blob/main/idosor.Rdata")
+idosor <- left_join(idosor,media_szentiment %>% dplyr::select(atlag,datum),by=c("datum"="datum"))
+idosor$datum <- as.Date(paste(idosor$datum,"-01",sep=""))
+megoszlas <- idosor[,c(1:4)]
+
+#Logaritmálás (Pénzügyi idősorokat érdemes logaritmálni)
+idosor$allampapir <- log(idosor$allampapir)
+idosor$reszveny <- log(idosor$reszveny)
+idosor$betet <- log(idosor$betet)
+idosor$tranzakcio <- log(idosor$tranzakcio)
+
+rcorr(as.matrix(idosor[,c(2:6)]))
+
+#Stacioneritás tesztelése
+adf.test(idosor$atlag) #nemstacioner
+adf.test(idosor$allampapir) #nemstacioner
+adf.test(idosor$tranzakcio) #nemstacioner
+adf.test(idosor$reszveny) #nemstacioner
+adf.test(idosor$betet)#nemstacioner
+
+#Stacionerré alakításhoz zükséges differenciázások száma
+ndiffs(idosor$atlag) #1
+ndiffs(idosor$allampapir) #1
+ndiffs(idosor$tranzakcio) #1
+ndiffs(idosor$reszveny) #2
+ndiffs(idosor$betet) #2
+
+#Differenciázás
+idosor$diff_atlag <- c(NA,diff(idosor$atlag))
+idosor$diff_allampapir <- c(NA,diff(idosor$allampapir))
+idosor$diff_tranzakcio <- c(NA,diff(idosor$tranzakcio))
+idosor$diff_reszveny <- c(NA,NA,diff(diff(idosor$reszveny)))
+idosor$diff_betet <- c(NA,NA,diff(diff(idosor$betet)))
+
+#Johansen-teszt
+johansen_teszt <- ca.jo(idosor[,c(2:6)],type="eigen",ecdet="const",K=2,spec="longrun")
+summary(johansen_teszt) # H0: r=0-t elfogadjuk -> Nem kointegráltak
+rm(johansen_teszt)
+
+#Engle-Granger tesztek
+adf.test(lm(tranzakcio~atlag,data=idosor)$residuals)#Hibatag nem stacioner -> az idősorok nem kointegráltak
+adf.test(lm(allampapir~atlag,data=idosor)$residuals)#Hibatag nem stacioner -> az idősorok nem kointegráltak
+adf.test(lm(reszveny~atlag,data=idosor)$residuals)#Hibatag nem stacioner -> az idősorok nem kointegráltak
+adf.test(lm(betet~atlag,data=idosor)$residuals)#Hibatag nem stacioner -> az idősorok nem kointegráltak
+
+
+#Optimális lag-számok VAR-modellekhez
+VARselect(idosor[2:140,c(7,9)],lag.max=15) # tranzakció -> 5
+VARselect(idosor[2:140,c(7,8)],lag.max=15) # állampapír -> 4
+VARselect(idosor[3:140,c(7,10)],lag.max=15)# részvény -> 4
+VARselect(idosor[3:140,c(7,11)],lag.max=15)# betét -> 11
+
+#Granger-okság
+grangertest(diff_tranzakcio~diff_atlag,order=5,data=idosor) #Granger okozza
+grangertest(diff_allampapir~diff_atlag,order=4,data=idosor) #Granger okozza
+grangertest(diff_reszveny~diff_atlag,order=4,data=idosor) #Granger okozza
+grangertest(diff_betet~diff_atlag,order=11,data=idosor) #nem okozza
+
+#Reverse causality tesztelése
+grangertest(diff_atlag~diff_tranzakcio,order=5,data=idosor)
+grangertest(diff_atlag~diff_allampapir,order=4,data=idosor)
+grangertest(diff_atlag~diff_reszveny,order=4,data=idosor)
+grangertest(diff_atlag~diff_betet,order=11,data=idosor)
+
+#VAR modell
+var_tranzakcio <- VAR(as.ts(idosor[2:140,c("diff_atlag","diff_tranzakcio")]),p=5,type="const")
+summary(var_tranzakcio)
+serial.test(var_tranzakcio)#hibatagok együttesen is fehérzajok
+lapply(as.data.frame(resid(var_tranzakcio)), function(i) bgtest(i ~ 1, order = 10))#külön-külön is fehérzajok
+roots(var_tranzakcio)#karakterisztikus polinom gyökei egységkörön belül
+
+var_allampapir <- VAR(as.ts(idosor[2:140,c("diff_atlag","diff_allampapir")]),p=4,type="const")
+summary(var_allampapir)
+serial.test(var_allampapir)#hibatagok együttesen is fehérzajok
+lapply(as.data.frame(resid(var_allampapir)), function(i) bgtest(i ~ 1, order = 10))#külön-külön is fehérzajok
+roots(var_allampapir)#karakterisztikus polinom gyökei egységkörön belül
+
+var_reszveny <- VAR(as.ts(idosor[3:140,c(7,10)]),p=4,type="const")
+summary(var_reszveny)
+serial.test(var_reszveny)#hibatagok együttesen is fehérzajok
+lapply(as.data.frame(resid(var_reszveny)), function(i) bgtest(i ~ 1, order = 10))#külön-külön is fehérzajok
+roots(var_reszveny)#karakterisztikus polinom gyökei egységkörön belül
+
+#Variancia-dekompozíció
+genFEVD(var_allampapir,n.ahead=12,no.corr=F)#12.938%
+genFEVD(var_reszveny,n.ahead=12,no.corr=F)#8.428%
+genFEVD(var_tranzakcio,n.ahead=12,no.corr=F)#8.428%
+
+
+#SVAR (Struturált VAR)
+matrix_tranzakcio <- diag(2)
+colnames(matrix_tranzakcio) <- c("diff_atlag","diff_tranzakcio")
+rownames(matrix_tranzakcio) <- c("diff_atlag","diff_tranzakcio")
+matrix_tranzakcio[1,2] <- NA
+#diag(matrix_tranzakcio) <- NA
+
+matrix_allampapir <- diag(2)
+colnames(matrix_allampapir) <- c("diff_atlag","diff_allampapir")
+rownames(matrix_allampapir) <- c("diff_atlag","diff_allampapir")
+matrix_allampapir[1,2] <- NA
+#diag(matrix_allampapir) <- NA
+
+matrix_reszveny <- diag(2)
+colnames(matrix_reszveny) <- c("diff_atlag","diff_reszveny")
+rownames(matrix_reszveny) <- c("diff_atlag","diff_reszveny")
+matrix_reszveny[1,2] <- NA
+#diag(matrix_reszveny) <- NA
+
+svar_tranzakcio <- SVAR(var_tranzakcio, estmethod = c("scoring","direct"), Amat = matrix_tranzakcio, hessian = TRUE,method="BFGS")
+svar_allampapir <- SVAR(var_allampapir, estmethod = c("scoring","direct"), Amat = matrix_allampapir, hessian = TRUE,method="BFGS")
+svar_reszveny <- SVAR(var_reszveny, estmethod = c("scoring","direct"), Amat = matrix_reszveny, hessian = TRUE,method="BFGS") 
+
+#Impulzus-válaszfüggvények
+plot(irf(svar_reszveny, impulse = "diff_atlag", response = "diff_reszveny",n.ahead = 12, ortho = FALSE,boot=TRUE),main="x. ábra - Részvény változó impulzus-válaszfüggvénye")
+plot(irf(svar_allampapir, impulse = "diff_atlag", response = "diff_allampapir",n.ahead = 12, ortho = FALSE,boot=TRUE),main="x. ábra - Állampapír változó impulzus-válaszfüggvénye")
+plot(irf(svar_tranzakcio, impulse = "diff_atlag", response = "diff_tranzakcio",n.ahead = 12, ortho = FALSE,boot=TRUE),main="x. ábra - Tranzakció változó impulzus-válaszfüggvénye")
+
+#Lead-lag egyidejűség
+ccf(idosor$diff_atlag[2:140],idosor$diff_tranzakcio[2:140], lag.max = 6, plot = FALSE) #-2 (szentimentindex megelőzi a tranzakciót)
+ccf(idosor$diff_atlag[2:140],idosor$diff_allampapir[2:140], lag.max = 6, plot = FALSE) #-2 (szentimentindex megelőzi az állampapírt)
+ccf(idosor$diff_atlag[3:140],idosor$diff_reszveny[3:140], lag.max = 6, plot = FALSE) #-2 (szentimentindex megelőzi a részvényt)
+ccf(idosor$diff_atlag[3:140],idosor$diff_betet[3:140], lag.max = 6, plot = FALSE) #egyidejű
+
+#Részvény-állampapír megoszlás 
+megoszlas$allampapir <- megoszlas$allampapir/megoszlas$tranzakcio
+megoszlas$reszveny <- megoszlas$reszveny/megoszlas$tranzakcio
+megoszlas$datum <- as.Date(paste(megoszlas$datum,"-01",sep=""))
+ggplot(megoszlas,aes(x=datum))+
+  labs(
+    x = "Dátum",
+    y = "Arány",
+    title = "6. ábra - Állampapír és részvény aránya a lakosság portfóliójában",
+    subtitle = "2010 június - 2021 augusztus",
+    caption = "Forrás: MNB"
+  )+
+  scale_x_date(date_breaks = "years" , date_labels = "%Y")+
+  geom_line(aes(y=allampapir,color="állampapír"),size=1)+
+  geom_line(aes(y=reszveny,color="részvény"),size=1)+
+  scale_y_continuous(labels = scales::percent)+
+  theme_bw()
+
+#Portfólióallokáció vizsgálata (állampapír és részvény aránya a háztartások portfóliójában)
+megoszlas$diff_atlag <- idosor$diff_atlag
+megoszlas$atlag <- idosor$atlag
+rcorr(as.matrix(megoszlas[,c(2,4,6)]))
+
+#Szükséges differenciázások száma
+ndiffs(megoszlas$allampapir) #1
+ndiffs(megoszlas$reszveny) #2
+
+#Differrenciázás
+megoszlas$diff_allampapir <- c(NA,diff(megoszlas$allampapir))
+megoszlas$diff_reszveny <- c(NA,NA,diff(diff(megoszlas$reszveny)))
+
+#Optimális lag-számok VAR-modellekhez
+VARselect(megoszlas[2:140,c(5,7)],lag.max=15) # állampapír -> 4
+VARselect(megoszlas[3:140,c(5,8)],lag.max=15)# részvény -> 4
+
+#Granger-teszt
+grangertest(diff_allampapir~diff_atlag,order=4,data=megoszlas) #nem okozza
+grangertest(diff_reszveny~diff_atlag,order=4,data=megoszlas) #Granger okozza
+
+#VAR-modell -> részvény 
+var_reszveny_megoszlas <- VAR(as.ts(megoszlas[3:140,c("diff_atlag","diff_reszveny")]),p=4,type="const")
+summary(var_reszveny_megoszlas)
+serial.test(var_reszveny_megoszlas)#hibatagok együttesen is fehérzajok
+lapply(as.data.frame(resid(var_reszveny_megoszlas)), function(i) bgtest(i ~ 1, order = 10))#külön-külön is fehérzajok
+roots(var_reszveny_megoszlas)#karakterisztikus polinom gyökei egységkörön belül
+
+#SVAR modell
+svar_reszveny_megoszlas <- SVAR(var_reszveny_megoszlas, estmethod = c("scoring","direct"), Amat = matrix_reszveny, hessian = TRUE) 
+
+#IVF
+plot(irf(svar_reszveny_megoszlas, impulse = "diff_atlag", response = "diff_reszveny",n.ahead = 12, ortho = FALSE),main="x. ábra - Részvény változó impulzus-válaszfüggvénye")
+
+```
+
+**Makroadatok -> szentimentindex**
+
+A következőkben azt vizsgálom meg, hogy mi befolyásolja a média hangulatát. Pontosabban azt ellenőrzöm, hogy a média szentimentjét nem az egyes makroindikátorok okozzák-e (reál GDP, munkanélküliségi ráta, infláció, BUX index)
+
+```{r,warning=FALSE}
+#Adatok importálása
+load_github_data("https://github.com/gonczigabor/TDK/blob/main/makro.Rdata")
+makro<- left_join(makro,idosor %>% dplyr::select(atlag,diff_atlag,datum),by=c("datum"="datum"))
+makro$datum <- as.Date(paste(makro$datum,"-01",sep=""))
+
+#Logaritmálás
+makro$bux <- log(makro$bux)
+
+#Korreláció
+rcorr(as.matrix(makro[,c(2:6)]))
+
+#Stacioneritás tesztelése
+adf.test(makro$inflacio) #nemstacioner
+adf.test(makro$unemployment) #nemstacioner
+adf.test(makro$bux) #nemstacioner
+adf.test(makro$gdp) #stacioner? 
+
+#Stacionerré alakításhoz zükséges differenciázások száma
+ndiffs(makro$inflacio) #1
+ndiffs(makro$unemployment) #1
+ndiffs(makro$bux) #1
+ndiffs(makro$gdp) #0
+
+#Differenciázás
+makro$diff_inflacio <- c(NA,diff(makro$inflacio))
+makro$diff_unemployment <- c(NA,diff(makro$unemployment))
+makro$diff_bux <- c(NA,diff(makro$bux))
+
+#Optimális lag-szám
+VARselect(makro[2:140,c(8,7)],lag.max=15) #infláció -> 4
+VARselect(makro[2:140,c(9,7)],lag.max=15) # unemployment -> 6
+VARselect(makro[2:140,c(10,7)],lag.max=15)# bux -> 1
+VARselect(makro[2:140,c(5,7)],lag.max=15) # gdp -> 13
+
+#Granger-okság
+grangertest(diff_atlag~diff_inflacio,order=4,data=makro)#nem okozza
+grangertest(diff_atlag~diff_unemployment,order=6,data=makro)#nem okozza
+grangertest(diff_atlag~gdp,order=13,data=makro)#nem okozza
+grangertest(diff_atlag~diff_bux,order=1,data=makro)#nem okozza
+
+#A média hangulatát nem okozzák vizsgált makroindikátorok Grangeri értelemben, teháT a szentimentindex nem a mutatók proxyváltozója
+
+```
+
+**Makroadatok -> pénzügyi idősorok**
+
+```{r,warning=FALSE}
+
+#Bankbetét változót okozza-e bármelyik makroaggregátum?
+makro$betet <- idosor$betet
+makro$diff_betet <- idosor$diff_betet
+
+rcorr(as.matrix(makro[,c(2:5,11)]))
+#erős szignifikáns kapcsolatok
+
+VARselect(makro[3:140,c(8,12)],lag.max=15) #infláció -> 12
+VARselect(makro[3:140,c(9,12)],lag.max=15) # unemployment -> 13
+VARselect(makro[3:140,c(10,12)],lag.max=15)# bux -> 3
+VARselect(makro[3:140,c(5,12)],lag.max=15) # gdp -> 13
+
+#Granger-okság
+grangertest(diff_betet~diff_inflacio,order=12,data=makro)#nem okozza
+grangertest(diff_betet~diff_unemployment,order=13,data=makro)#nem okozza
+grangertest(diff_betet~gdp,order=3,data=makro)#nem okozza
+grangertest(diff_betet~diff_bux,order=13,data=makro)#nem okozza
+
+#Állampapír változót okozza-e bármelyik makroaggregátum?
+makro$allampapir <- idosor$allampapir
+makro$diff_allampapir <- idosor$diff_allampapir
+
+rcorr(as.matrix(makro[,c(2:6,13)]))
+#erős szignifikáns kapcsolatok
+
+VARselect(makro[2:140,c(8,14)],lag.max=15) #infláció -> 3
+VARselect(makro[2:140,c(9,14)],lag.max=15) # unemployment -> 3
+VARselect(makro[2:140,c(10,14)],lag.max=15)# bux -> 3
+VARselect(makro[2:140,c(5,14)],lag.max=15) # gdp -> 13
+
+#Granger-okság
+grangertest(diff_allampapir~diff_inflacio,order=3,data=makro)#nem okozza
+grangertest(diff_allampapir~diff_unemployment,order=3,data=makro)#nem okozza
+grangertest(diff_allampapir~gdp,order=3,data=makro)#nem okozza
+grangertest(diff_allampapir~diff_bux,order=13,data=makro)#nem okozza
+
+#Tranzakció változót okozza-e bármelyik makroaggregátum?
+makro$tranzakcio <- idosor$tranzakcio
+makro$diff_tranzakcio <- idosor$diff_tranzakcio
+
+rcorr(as.matrix(makro[,c(2:5,15)]))
+#erős szignifikáns kapcsolatok
+
+VARselect(makro[2:140,c(8,16)],lag.max=15) #infláció -> 4
+VARselect(makro[2:140,c(9,16)],lag.max=15) # unemployment -> 3
+VARselect(makro[2:140,c(10,16)],lag.max=15)# bux -> 1
+VARselect(makro[2:140,c(5,16)],lag.max=15) # gdp -> 13
+
+#Granger-okság
+grangertest(diff_tranzakcio~diff_inflacio,order=4,data=makro)#Granger okozza
+grangertest(diff_tranzakcio~diff_unemployment,order=3,data=makro)#nem okozza
+grangertest(diff_tranzakcio~gdp,order=1,data=makro)#nem okozza
+grangertest(diff_tranzakcio~diff_bux,order=13,data=makro)#nem okozza
+
+#VAR-modell (infláció->tranzakció)
+var_inflacio <- VAR(makro[2:140,c("diff_inflacio","diff_tranzakcio")],p=4,type="const")
+summary(var_inflacio)
+serial.test(var_tranzakcio)#hibatagok együttesen is fehérzajok
+lapply(as.data.frame(resid(var_tranzakcio)), function(i) bgtest(i ~ 1, order = 10))#külön-külön is fehérzajok
+roots(var_tranzakcio)#karakterisztikus polinom gyökei egységkörön belül
+
+#Impulzus-válaszfüggvény
+plot(irf(var_inflacio, impulse = "diff_inflacio", response = "diff_tranzakcio",n.ahead = 12, ortho = TRUE,boot=TRUE),main="3. ábra - Tranzakció változó impulzus-válaszfüggvénye")
+
+#Variancia-dekompozíció
+genFEVD(var_inflacio,n.ahead=12,no.corr=F)#9.575%
+
+#Részvény változót okozza-e bármelyik makroaggregátum?
+makro$reszveny <- idosor$reszveny
+makro$diff_reszveny <- idosor$diff_reszveny
+
+rcorr(as.matrix(makro[,c(2:5,17)]))
+#erős szignifikáns kapcsolatok
+
+VARselect(makro[3:140,c(8,18)],lag.max=15) #infláció -> 12
+VARselect(makro[3:140,c(9,18)],lag.max=15) # unemployment -> 4
+VARselect(makro[3:140,c(10,18)],lag.max=15)# bux -> 6
+VARselect(makro[3:140,c(5,18)],lag.max=15) # gdp -> 13
+
+#Granger-okság
+grangertest(diff_reszveny~diff_inflacio,order=12,data=makro)#Granger okozza
+grangertest(diff_reszveny~diff_unemployment,order=4,data=makro)#nem okozza
+grangertest(diff_reszveny~gdp,order=6,data=makro)#nem okozza
+grangertest(diff_reszveny~diff_bux,order=13,data=makro)#nem okozza
+
+```
